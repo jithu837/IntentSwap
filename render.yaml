@@ -1,0 +1,29 @@
+# render.yaml — Deploy IntentSwap backend to Render (free tier)
+# Docs: https://render.com/docs/yaml-spec
+
+services:
+  - type: web
+    name: intentswap-backend
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: MONGO_URI
+        sync: false   # set in Render dashboard → secret
+      - key: RPC_URL
+        sync: false
+      - key: CONTRACT_ADDRESS
+        sync: false
+      - key: SOLVER_PRIVATE_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        value: "*"
+    healthCheckPath: /health
+    autoDeploy: true

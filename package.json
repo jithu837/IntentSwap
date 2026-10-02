@@ -1,0 +1,19 @@
+{
+  "name": "intentswap",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "contracts",
+    "backend",
+    "sdk"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=backend",
+    "build": "npm run build --workspace=backend && npm run build --workspace=sdk",
+    "test": "npm run test --workspace=contracts && npm run test --workspace=backend",
+    "install:all": "npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
