@@ -53,6 +53,7 @@ export function createIntentRouter(intentService: IntentService): Router {
         const record = await intentService.processIntent(parsed.data);
         res.status(201).json({ success: true, data: record });
       } catch (err: unknown) {
+        console.error("[POST /api/intents Error]", err);
         const message = err instanceof Error ? err.message : "Unknown error";
         // Signature errors → 400, everything else → 500
         const status = message.includes("Signature") || message.includes("deadline") || message.includes("used")

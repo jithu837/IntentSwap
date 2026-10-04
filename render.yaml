@@ -1,7 +1,8 @@
-# render.yaml — Deploy IntentSwap backend to Render (free tier)
+# render.yaml — Render Blueprint for IntentSwap (Backend + Frontend)
 # Docs: https://render.com/docs/yaml-spec
 
 services:
+  # ── Backend Web Service ──────────────────────────────────────────────────
   - type: web
     name: intentswap-backend
     runtime: node
@@ -16,14 +17,36 @@ services:
       - key: PORT
         value: "4000"
       - key: MONGO_URI
-        sync: false   # set in Render dashboard → secret
+        sync: false # Set in Render dashboard (Atlas connection string)
       - key: RPC_URL
-        sync: false
+        sync: false # Set in Render dashboard (Sepolia RPC URL)
       - key: CONTRACT_ADDRESS
-        sync: false
+        sync: false # Set in Render dashboard
       - key: SOLVER_PRIVATE_KEY
-        sync: false
+        sync: false # Set in Render dashboard
+      - key: FRONTEND_URL
+        value: https://intentswap-frontend.onrender.com
       - key: CORS_ORIGIN
-        value: "*"
+        value: https://intentswap-frontend.onrender.com
     healthCheckPath: /health
+    autoDeploy: true
+
+  # ── Frontend Static Site ──────────────────────────────────────────────────
+  - type: web
+    name: intentswap-frontend
+    runtime: static
+    region: oregon
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://intentswap-backend.onrender.com
+      - key: VITE_WS_URL
+        value: wss://intentswap-backend.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     autoDeploy: true

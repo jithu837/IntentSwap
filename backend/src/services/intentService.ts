@@ -1,6 +1,6 @@
 /**
  * Intent processing service — orchestrates the full lifecycle:
- *   submit → verify sig → run solver auction → store → (optionally) settle on-chain
+ *   submit → verify sig → run solver auction → store → settle on-chain → broadcast
  */
 
 import { IntentModel } from "../db/models/Intent";
@@ -13,17 +13,18 @@ export class IntentService {
   constructor(private escrow: EscrowService) {}
 
   /**
-   * Process a submitted intent:
-   * 1. Verify signature
-   * 2. Check not already used on-chain
-   * 3. Run solver auction
+   * Process a submitted intent end-to-end:
+   * 1. Verify EIP-712 signature
+   * 2. Check deadline & on-chain state
+   * 3. Run solver auction (parallel)
    * 4. Persist to DB
-   * 5. Broadcast result via WebSocket
+   * 5. Attempt on-chain settlement (if SOLVER_PRIVATE_KEY is set)
+   * 6. Broadcast result via WebSocket
    */
   async processIntent(signedIntent: SignedIntent): Promise<IntentRecord> {
     const { intent, signature } = signedIntent;
 
-    // ── 1. Verify signature ───────────────────────────────────────────────────
+    // ── 1. Verify signature ─────────────────────────────────────────────────
     const recoveredSigner = await this.escrow.verifySignature(signedIntent);
     if (recoveredSigner.toLowerCase() !== intent.user.toLowerCase()) {
       throw new Error(
@@ -31,33 +32,33 @@ export class IntentService {
       );
     }
 
-    // ── 2. Check deadline ─────────────────────────────────────────────────────
+    // ── 2. Check deadline ───────────────────────────────────────────────────
     if (Math.floor(Date.now() / 1000) > intent.deadline) {
       throw new Error("Intent deadline has already passed");
     }
 
-    // ── 3. Compute hash & check on-chain ─────────────────────────────────────
+    // ── 3. Compute hash & check on-chain ────────────────────────────────────
     const intentHash = await this.escrow.hashIntent(intent);
     const alreadyUsed = await this.escrow.isUsed(intentHash);
     if (alreadyUsed) {
       throw new Error("Intent has already been used or cancelled on-chain");
     }
 
-    // Check DB for duplicate
+    // Check DB for duplicate (idempotency)
     const existing = await IntentModel.findOne({ intentHash });
     if (existing) {
       return existing.toObject() as unknown as IntentRecord;
     }
 
-    // ── 4. Run solver auction ─────────────────────────────────────────────────
+    // ── 4. Run solver auction ────────────────────────────────────────────────
     const { winner, allQuotes } = await runSolverAuction(intent);
 
     const status =
       winner === null
         ? "expired" // no solver could fill
-        : "pending"; // winner selected, awaiting on-chain settlement
+        : "pending"; // winner selected, attempting settlement
 
-    // ── 5. Persist ────────────────────────────────────────────────────────────
+    // ── 5. Persist initial record ────────────────────────────────────────────
     const record = await IntentModel.create({
       intentHash,
       intent,
@@ -68,15 +69,50 @@ export class IntentService {
       allQuotes,
     });
 
-    const plain = record.toObject() as unknown as IntentRecord;
+    let plain = record.toObject() as unknown as IntentRecord;
 
-    // ── 6. Broadcast via WebSocket ────────────────────────────────────────────
+    // ── 6. Attempt on-chain settlement ──────────────────────────────────────
+    if (winner && process.env.SOLVER_PRIVATE_KEY) {
+      try {
+        const amountOut = BigInt(winner.amountOut);
+        const txHash = await this.escrow.fulfillIntent(
+          signedIntent,
+          amountOut,
+          process.env.SOLVER_PRIVATE_KEY
+        );
+
+        // Update DB with tx hash and filled status
+        await IntentModel.findOneAndUpdate(
+          { intentHash },
+          { $set: { status: "filled", txHash } }
+        );
+
+        plain = { ...plain, status: "filled", txHash } as IntentRecord;
+        console.log(
+          `[IntentService] On-chain settlement successful. txHash: ${txHash}`
+        );
+      } catch (settlementErr: any) {
+        // Settlement is best-effort — don't fail the whole request
+        console.warn(
+          `[IntentService] On-chain settlement skipped (offline/demo mode): ${
+            settlementErr.message ?? settlementErr
+          }`
+        );
+      }
+    } else if (winner && !process.env.SOLVER_PRIVATE_KEY) {
+      console.log(
+        "[IntentService] SOLVER_PRIVATE_KEY not set — skipping on-chain settlement (demo mode)"
+      );
+    }
+
+    // ── 7. Broadcast via WebSocket ───────────────────────────────────────────
     broadcastToSubscribers(intent.user.toLowerCase(), {
       type: "INTENT_QUOTED",
       intentHash,
-      status,
+      status: plain.status,
       winner,
       allQuotes,
+      txHash: (plain as any).txHash,
     });
 
     return plain;

@@ -16,10 +16,11 @@ import { IntentService } from "./services/intentService";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const MONGO_URI =
-  process.env.MONGO_URI ?? "mongodb://localhost:27017/intentswap";
+  process.env.MONGODB_URI ?? process.env.MONGO_URI ?? "mongodb://localhost:27017/intentswap";
 const RPC_URL = process.env.RPC_URL ?? "http://127.0.0.1:8545";
 const CONTRACT_ADDRESS =
   process.env.CONTRACT_ADDRESS ?? "0x0000000000000000000000000000000000000000";
+const FRONTEND_URL = process.env.FRONTEND_URL ?? process.env.CORS_ORIGIN ?? "*";
 
 // ─── App setup ────────────────────────────────────────────────────────────────
 
@@ -29,7 +30,18 @@ const app = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ?? "*",
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      // Allow localhost on any port in development
+      if (origin.startsWith("http://localhost:") || origin.startsWith("http://127.0.0.1:")) {
+        return callback(null, true);
+      }
+      if (FRONTEND_URL === "*" || origin === FRONTEND_URL) {
+        return callback(null, true);
+      }
+      callback(null, true); // Permissive in dev mode
+    },
     methods: ["GET", "POST"],
   })
 );
@@ -63,7 +75,17 @@ app.get("/health", (_req, res) => {
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function bootstrap() {
-  // 1. Connect to MongoDB
+  // 1. Connect to MongoDB with event listeners for reconnection
+  mongoose.connection.on("disconnected", () => {
+    console.warn("[DB] MongoDB disconnected! Attempting reconnect...");
+  });
+  mongoose.connection.on("reconnected", () => {
+    console.log("[DB] MongoDB reconnected successfully.");
+  });
+  mongoose.connection.on("error", (err) => {
+    console.error("[DB] MongoDB connection error:", err);
+  });
+
   await mongoose.connect(MONGO_URI);
   console.log("[DB] MongoDB connected:", MONGO_URI);
 

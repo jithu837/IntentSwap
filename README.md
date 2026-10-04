@@ -237,13 +237,67 @@ Subscribe to real-time intent updates. Messages:
 
 ---
 
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User (Web3 Wallet)
+    participant SDK as IntentSwap SDK
+    participant API as Backend API & Solver Engine
+    participant Solvers as Competing Solvers (Alpha/Beta/Gamma)
+    participant Contract as IntentEscrow.sol (On-Chain)
+
+    User->>SDK: Initiate Swap (amountIn, minAmountOut)
+    SDK->>User: Request EIP-712 Signature (0 Gas)
+    User-->>SDK: Signed Intent (v, r, s)
+    SDK->>API: POST /api/intents (Signed Intent)
+    API->>API: Verify EIP-712 Signature & Check Expiry
+    API->>Solvers: Execute Solver Auction (Parallel Quotes)
+    Solvers-->>API: Quotes (AlphaBot, BetaBot, GammaBot)
+    API->>API: Determine Winning Quote (Highest Net Output)
+    API->>User: WS Broadcast (INTENT_QUOTED, Winner Announced)
+    API->>Contract: fulfillIntent(Intent, Sig, WinnerAmountOut)
+    Contract->>Contract: Verify Signature & EIP-712 Hash
+    Contract->>Contract: Check & Mark usedIntents[hash] = true
+    Contract->>User: Transfer tokenOut to User
+    Contract->>Solvers: Transfer tokenIn (minus protocol fee) to Winner Solver
+    Contract-->>API: Emit IntentFulfilled Event
+```
+
+---
+
+## 💡 Interview Notes — Key Technical & Architectural Decisions
+
+### 1. Why Intent-Based Swaps over Traditional AMM Transactions?
+In traditional AMM swaps (like Uniswap v2), users submit on-chain transactions directly, paying gas fees up front regardless of whether the transaction succeeds or gets front-run. With **IntentSwap**:
+- **Gas-Free Order Creation**: Users sign off-chain EIP-712 typed data payloads ($0 gas).
+- **Execution Guarantee**: Solvers bear the execution risk and gas costs on-chain.
+- **Better Execution Prices**: Competing solver bots race off-chain to aggregate liquidity across DEXs or internal pools, delivering higher net output.
+
+### 2. Why EIP-712 Typed Data Standard?
+Using `eth_signTypedData_v4` provides:
+- **Human Readability**: Wallet interfaces (MetaMask/Rabby) render structured fields (`tokenIn`, `amountIn`, `minAmountOut`, `deadline`) instead of opaque hex strings.
+- **Cross-Chain & Contract Replay Protection**: The EIP-712 domain separator binds signatures strictly to `chainId` and `verifyingContract` address.
+
+### 3. Replay Protection & Nonce Strategy
+Replay attacks are prevented at two layers:
+- **On-chain State Mapping (`usedIntents[intentHash]`)**: Once an intent is settled, its unique EIP-712 hash is marked as `true`. Subsequent settlement attempts revert with `IntentAlreadyUsed()`.
+- **Sequential Nonce Guard (`cancelIntent()`)**: Users can increment their account nonce on-chain to instantly invalidate all pending off-chain intents signed with older nonces.
+
+### 4. Reentrancy & Security Measures
+- **Checks-Effects-Interactions (CEI)**: `usedIntents[hash]` is updated *before* any ERC-20 token transfers occur.
+- **ReentrancyGuard**: Inherited OpenZeppelin guard prevents malicious token callbacks from re-entering `fulfillIntent`.
+- **SafeERC20**: Token transfers use OpenZeppelin `SafeERC20` to safely handle non-standard ERC-20 tokens (e.g. USDT missing boolean return values).
+
+---
+
 ## Deployment (Render.com)
 
 1. Push repo to GitHub
-2. Create a new Render **Web Service** → connect GitHub repo
-3. Render detects `render.yaml` automatically
-4. Set secret env vars in the Render dashboard: `MONGO_URI`, `RPC_URL`, `CONTRACT_ADDRESS`, `SOLVER_PRIVATE_KEY`
-5. Deploy 🚀
+2. Create a new Render **Blueprint** → connect GitHub repo
+3. Render auto-discovers [`render.yaml`](file:///c:/Users/Admin/intentswap/render.yaml) and provisions both backend API & static frontend UI.
+4. Set secret env vars in the Render dashboard (`MONGODB_URI`, `RPC_URL`, `CONTRACT_ADDRESS`, `SOLVER_PRIVATE_KEY`).
 
 ---
 
